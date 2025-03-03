@@ -1,5 +1,4 @@
 import fetch from 'node-fetch';
-import { ApiGatewayManagementApiClient, PostToConnectionCommand } from "@aws-sdk/client-apigatewaymanagementapi";
 import { BedrockRuntimeClient, InvokeModelWithResponseStreamCommand } from "@aws-sdk/client-bedrock-runtime";
 import { SSMClient, GetParameterCommand } from "@aws-sdk/client-ssm";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
@@ -9,7 +8,7 @@ import OpenAI from 'openai';
 const sqsClient = new SQSClient({ region: process.env.AWS_REGION });
 
 // Common method to send messages to the WebSocket client
-async function sendMessageToSQS(apiGatewayClient, connectionId, message) {
+async function sendMessageToSQS(connectionId, message) {
   try {
     // Send message directly to WebSocket
     // const command = new PostToConnectionCommand({
@@ -57,10 +56,6 @@ export const handler = async (event) => {
   console.log("websocket_endpoint:", websocket_endpoint);
   console.log("endpoint:", endpoint);
 
-  const apiGatewayClient = new ApiGatewayManagementApiClient({
-    endpoint: endpoint,
-  });
-
   try {
     const body = JSON.parse(event.body);
     console.log("body:", body);
@@ -74,16 +69,16 @@ export const handler = async (event) => {
 
     if (model.startsWith('deepseek')) {
       // 使用 Ollama API
-      return await handleOllamaStream(body, connectionId, apiGatewayClient);
+      return await handleOllamaStream(body, connectionId);
     } else if (model.startsWith('anthropic')) {
       // 使用 AWS Bedrock
-      return await handleBedrockAnthropicStream(body, connectionId, apiGatewayClient);
+      return await handleBedrockAnthropicStream(body, connectionId);
     } else if (model.startsWith('amazon.nova')) {
       // 使用 AWS Bedrock Nova
-      return await handleNovaStream(body, connectionId, apiGatewayClient);
+      return await handleNovaStream(body, connectionId);
     } else if (model.startsWith('openai')) {
       // 使用 OpenAI API
-      return await handleOpenAIStream(body, connectionId, apiGatewayClient);
+      return await handleOpenAIStream(body, connectionId);
     } else {
       throw new Error('Unsupported model');
     }
@@ -91,7 +86,7 @@ export const handler = async (event) => {
   } catch (error) {
     console.error('Error:', error);
     try {
-      await sendMessageToSQS(apiGatewayClient, connectionId, {
+      await sendMessageToSQS(connectionId, {
         type: 'error',
         message: error.message
       });
@@ -131,7 +126,7 @@ function build_prompt(body) {
 
 
 // Ollama 处理函数
-async function handleOllamaStream(body, connectionId, apiGatewayClient) {
+async function handleOllamaStream(body, connectionId) {
   const ollamaUrl = process.env.OLLAMA_API_URL;
 
   // 将历史消息转换为文本格式
@@ -167,7 +162,7 @@ async function handleOllamaStream(body, connectionId, apiGatewayClient) {
     for (const line of lines) {
       try {
         const data = JSON.parse(line);
-        await sendMessageToSQS(apiGatewayClient, connectionId, {
+        await sendMessageToSQS(connectionId, {
           type: 'response',
           sequence: sequence++,
           content: data.response,
@@ -185,7 +180,7 @@ async function handleOllamaStream(body, connectionId, apiGatewayClient) {
 }
 
 // Bedrock 处理函数
-async function handleBedrockAnthropicStream(body, connectionId, apiGatewayClient) {
+async function handleBedrockAnthropicStream(body, connectionId) {
   const bedrockClient = new BedrockRuntimeClient({
     region: process.env.AWS_REGION
   });
@@ -234,7 +229,7 @@ async function handleBedrockAnthropicStream(body, connectionId, apiGatewayClient
       //console.log('decoded chunk:', decoded);
 
       if (decoded.type === 'content_block_delta') {
-        await sendMessageToSQS(apiGatewayClient, connectionId, {
+        await sendMessageToSQS(connectionId, {
           type: 'response',
           sequence: sequence++,
           content: decoded.delta.text,
@@ -244,7 +239,7 @@ async function handleBedrockAnthropicStream(body, connectionId, apiGatewayClient
       }
 
       if (decoded.type === 'message_stop') {
-        await sendMessageToSQS(apiGatewayClient, connectionId, {
+        await sendMessageToSQS(connectionId, {
           type: 'response',
           content: '',
           sequence: sequence++,
@@ -257,7 +252,7 @@ async function handleBedrockAnthropicStream(body, connectionId, apiGatewayClient
     return { statusCode: 200 };
   } catch (error) {
     console.error('Bedrock Error:', error);
-    await sendMessageToSQS(apiGatewayClient, connectionId, {
+    await sendMessageToSQS(connectionId, {
       type: 'error',
       message: `Bedrock Error: ${error.message}`
     });
@@ -266,13 +261,20 @@ async function handleBedrockAnthropicStream(body, connectionId, apiGatewayClient
 }
 
 // Nova handler function
-async function handleNovaStream(body, connectionId, apiGatewayClient) {
+async function handleNovaStream(body, connectionId) {
   const bedrockClient = new BedrockRuntimeClient({
     region: process.env.AWS_REGION
   });
 
+  // Extract the model ID from the body
   const modelId = body.model;
   console.log('Using Nova model:', modelId);
+  
+  // Use the full ARN format for the model
+  // Format: arn:aws:bedrock:{region}::foundation-model/{model-id}
+  const region = process.env.AWS_REGION;
+  const modelArn = `arn:aws:bedrock:${region}::foundation-model/${modelId}`;
+  console.log('Using Nova model ARN:', modelArn);
 
   // 将历史消息转换为 Nova 格式
   const messages = [];
@@ -295,7 +297,7 @@ async function handleNovaStream(body, connectionId, apiGatewayClient) {
   console.log('messages:', messages);
 
   const command = new InvokeModelWithResponseStreamCommand({
-    modelId: modelId,
+    modelId: modelArn,  // Use the ARN instead of just the model ID
     contentType: 'application/json',
     accept: 'application/json',
     body: JSON.stringify({
@@ -322,12 +324,10 @@ async function handleNovaStream(body, connectionId, apiGatewayClient) {
         isFirstChunk = false;
       }
 
-      //console.log('decoded chunk:', decoded);
-
       // Nova returns chunks with delta.text field
       if (decoded.contentBlockDelta?.delta?.text) {
         responseText += decoded.contentBlockDelta.delta.text;
-        await sendMessageToSQS(apiGatewayClient, connectionId, {
+        await sendMessageToSQS(connectionId, {
           type: 'response',
           sequence: sequence++,
           content: decoded.contentBlockDelta.delta.text,
@@ -338,7 +338,7 @@ async function handleNovaStream(body, connectionId, apiGatewayClient) {
 
     // Send final response if we have accumulated text
     if (responseText && !messageStop) {
-      await sendMessageToSQS(apiGatewayClient, connectionId, {
+      await sendMessageToSQS(connectionId, {
         type: 'response',
         sequence: sequence++,
         content: '',
@@ -346,7 +346,7 @@ async function handleNovaStream(body, connectionId, apiGatewayClient) {
       });
     } else {
       // If no response was generated, send an error
-      await sendMessageToSQS(apiGatewayClient, connectionId, {
+      await sendMessageToSQS(connectionId, {
         type: 'error',
         message: 'No response generated from Nova model'
       });
@@ -355,7 +355,7 @@ async function handleNovaStream(body, connectionId, apiGatewayClient) {
     return { statusCode: 200 };
   } catch (error) {
     console.error('Nova Error:', error);
-    await sendMessageToSQS(apiGatewayClient, connectionId, {
+    await sendMessageToSQS(connectionId, {
       type: 'error',
       message: `Nova Error: ${error.message}`
     });
@@ -381,7 +381,7 @@ async function getOpenAIKey() {
 }
 
 // OpenAI 处理函数
-async function handleOpenAIStream(body, connectionId, apiGatewayClient) {
+async function handleOpenAIStream(body, connectionId) {
   const apiKey = await getOpenAIKey();
   const openai = new OpenAI({
     apiKey: apiKey
@@ -411,7 +411,7 @@ async function handleOpenAIStream(body, connectionId, apiGatewayClient) {
   for await (const chunk of stream) {
     const content = chunk.choices[0]?.delta?.content || '';
     if (content) {
-      await sendMessageToSQS(apiGatewayClient, connectionId, {
+      await sendMessageToSQS(connectionId, {
         type: 'response',
         sequence: sequence++,
         content: content,
@@ -421,7 +421,7 @@ async function handleOpenAIStream(body, connectionId, apiGatewayClient) {
   }
 
   // 发送完成信号
-  await sendMessageToSQS(apiGatewayClient, connectionId, {
+  await sendMessageToSQS(connectionId, {
     type: 'response',
     content: '',
     sequence: sequence++,

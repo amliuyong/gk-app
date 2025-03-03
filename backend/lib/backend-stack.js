@@ -193,7 +193,6 @@ export class BackendStack extends Stack {
       bundling: {
         minify: true,
         sourceMap: true,
-        externalModules: ['aws-sdk'],
       },
     });
 
