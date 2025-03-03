@@ -6,7 +6,6 @@ import * as ecs_patterns from 'aws-cdk-lib/aws-ecs-patterns';
 import * as ecr_assets from 'aws-cdk-lib/aws-ecr-assets';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as apigatewayv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import { Runtime } from 'aws-cdk-lib/aws-lambda';
@@ -285,21 +284,23 @@ export class BackendStack extends Stack {
 
     // Get the WebSocket URL
     const wsUrl = `wss://${webSocketApi.ref}.execute-api.${this.region}.amazonaws.com/${stage.stageName}`;
-
-    // 给 Lambda 添加发送消息的权限
-    predictFunction.addEnvironment('WEBSOCKET_ENDPOINT', wsUrl);
+    // Add a separate policy for listing and describing models
     predictFunction.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: ['execute-api:ManageConnections'],
-      resources: [`arn:aws:execute-api:${this.region}:${this.account}:${webSocketApi.ref}/${stage.stageName}/*`],
+      actions: [
+        'bedrock:InvokeModel',
+        'bedrock:InvokeModelWithResponseStream',
+        'bedrock:ListFoundationModels',
+        'bedrock:GetFoundationModel'
+      ],
+      resources: ['*']
     }));
 
     // Add SQS URL to Lambda environment variables
     predictFunction.addEnvironment('WEBSOCKET_QUEUE_URL', websocketQueue.queueUrl);
-    
     // Grant Lambda permission to send messages to SQS
     websocketQueue.grantSendMessages(predictFunction);
-    
+
     // Create a Lambda function to process messages from SQS
     const messageProcessorFunction = new NodejsFunction(this, 'MessageProcessorFunction', {
       runtime: Runtime.NODEJS_18_X,
@@ -315,16 +316,16 @@ export class BackendStack extends Stack {
       },
       securityGroups: [lambdaSecurityGroup],
     });
-    
+
     // Add SQS as an event source for the Lambda function
     messageProcessorFunction.addEventSource(new SqsEventSource(websocketQueue, {
       batchSize: 3, // Process up to 10 messages at once
       maxBatchingWindow: Duration.seconds(2), // Wait up to 5 seconds to collect messages
     }));
-    
+
     // Grant the processor Lambda permission to receive and delete messages from SQS
     websocketQueue.grantConsumeMessages(messageProcessorFunction);
-    
+
     // Grant the processor Lambda permission to manage WebSocket connections
     messageProcessorFunction.addToRolePolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
@@ -384,26 +385,6 @@ export class BackendStack extends Stack {
       description: 'Ollama Service URL',
     });
 
-    // Update the Bedrock permissions section in your stack
-    predictFunction.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'bedrock:InvokeModel',
-        'bedrock:InvokeModelWithResponseStream',
-      ],
-      resources: [
-        `arn:aws:bedrock:${this.region}::foundation-model/*`,
-      ]
-    }));
 
-    // Add a separate policy for listing and describing models
-    predictFunction.addToRolePolicy(new iam.PolicyStatement({
-      effect: iam.Effect.ALLOW,
-      actions: [
-        'bedrock:ListFoundationModels',
-        'bedrock:GetFoundationModel'
-      ],
-      resources: ['*']
-    }));
   }
 } 

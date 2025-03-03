@@ -267,15 +267,13 @@ async function handleNovaStream(body, connectionId) {
   });
 
   // Extract the model ID from the body
-  const modelId = body.model;
+  let modelId = body.model;
+
+  if (modelId.startsWith('amazon.nova')) {
+    modelId = "us." + modelId
+  }
   console.log('Using Nova model:', modelId);
   
-  // Use the full ARN format for the model
-  // Format: arn:aws:bedrock:{region}::foundation-model/{model-id}
-  const region = process.env.AWS_REGION;
-  const modelArn = `arn:aws:bedrock:${region}::foundation-model/${modelId}`;
-  console.log('Using Nova model ARN:', modelArn);
-
   // 将历史消息转换为 Nova 格式
   const messages = [];
   if (body.context) {
@@ -297,7 +295,7 @@ async function handleNovaStream(body, connectionId) {
   console.log('messages:', messages);
 
   const command = new InvokeModelWithResponseStreamCommand({
-    modelId: modelArn,  // Use the ARN instead of just the model ID
+    modelId: modelId,
     contentType: 'application/json',
     accept: 'application/json',
     body: JSON.stringify({
