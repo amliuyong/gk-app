@@ -13,6 +13,7 @@ import { SqsEventSource } from 'aws-cdk-lib/aws-lambda-event-sources';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { CfnOutput } from 'aws-cdk-lib';
+import { BedrockKnowledgeBaseConstruct } from './bedrock.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,6 +21,9 @@ const __dirname = dirname(__filename);
 export class BackendStack extends Stack {
   constructor(scope, id, props) {
     super(scope, id, props);
+
+    const stackName = Stack.of(this).stackName;
+    const stackId = cdk.Fn.select(0, cdk.Fn.split('-', cdk.Fn.select(2, cdk.Fn.split('/', Stack.of(this).stackId))));
 
     // Create SQS Queue for WebSocket messages
     const websocketQueue = new sqs.Queue(this, 'WebSocketMessageQueue', {
@@ -385,6 +389,10 @@ export class BackendStack extends Stack {
       description: 'Ollama Service URL',
     });
 
-
+    new BedrockKnowledgeBaseConstruct(this, 'BedrockKB', {
+      stackName: stackName,
+      stackId: stackId,
+      roleArn: predictFunction.role?.roleArn
+    });
   }
 } 
